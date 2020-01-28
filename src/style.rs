@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
-use errors::*;
+use crate::errors::*;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
 pub enum OutputComponent {
@@ -10,6 +10,7 @@ pub enum OutputComponent {
     Grid,
     Header,
     Numbers,
+    Snip,
     Full,
     Plain,
 }
@@ -20,9 +21,15 @@ pub enum OutputWrap {
     None,
 }
 
+impl Default for OutputWrap {
+    fn default() -> Self {
+        OutputWrap::None
+    }
+}
+
 impl OutputComponent {
-    pub fn components(&self, interactive_terminal: bool) -> &'static [OutputComponent] {
-        match *self {
+    pub fn components(self, interactive_terminal: bool) -> &'static [OutputComponent] {
+        match self {
             OutputComponent::Auto => {
                 if interactive_terminal {
                     OutputComponent::Full.components(interactive_terminal)
@@ -34,11 +41,13 @@ impl OutputComponent {
             OutputComponent::Grid => &[OutputComponent::Grid],
             OutputComponent::Header => &[OutputComponent::Header],
             OutputComponent::Numbers => &[OutputComponent::Numbers],
+            OutputComponent::Snip => &[OutputComponent::Snip],
             OutputComponent::Full => &[
                 OutputComponent::Changes,
                 OutputComponent::Grid,
                 OutputComponent::Header,
                 OutputComponent::Numbers,
+                OutputComponent::Snip,
             ],
             OutputComponent::Plain => &[],
         }
@@ -55,6 +64,7 @@ impl FromStr for OutputComponent {
             "grid" => Ok(OutputComponent::Grid),
             "header" => Ok(OutputComponent::Header),
             "numbers" => Ok(OutputComponent::Numbers),
+            "snip" => Ok(OutputComponent::Snip),
             "full" => Ok(OutputComponent::Full),
             "plain" => Ok(OutputComponent::Plain),
             _ => Err(format!("Unknown style '{}'", s).into()),
@@ -62,10 +72,14 @@ impl FromStr for OutputComponent {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OutputComponents(pub HashSet<OutputComponent>);
 
 impl OutputComponents {
+    pub fn new(components: &[OutputComponent]) -> OutputComponents {
+        OutputComponents(components.iter().cloned().collect())
+    }
+
     pub fn changes(&self) -> bool {
         self.0.contains(&OutputComponent::Changes)
     }
@@ -80,6 +94,10 @@ impl OutputComponents {
 
     pub fn numbers(&self) -> bool {
         self.0.contains(&OutputComponent::Numbers)
+    }
+
+    pub fn snip(&self) -> bool {
+        self.0.contains(&OutputComponent::Snip)
     }
 
     pub fn plain(&self) -> bool {

@@ -4,8 +4,11 @@ use std::str::FromStr;
 
 use atty::{self, Stream};
 
+use crate::{
+    clap_app,
+    config::{get_args_from_config_file, get_args_from_env_var},
+};
 use clap::ArgMatches;
-use clap_app;
 use wild;
 
 use console::Term;
@@ -13,67 +16,15 @@ use console::Term;
 #[cfg(windows)]
 use ansi_term;
 
-use assets::BAT_THEME_DEFAULT;
-use config::{get_args_from_config_file, get_args_from_env_var};
-use errors::*;
-use inputfile::InputFile;
-use line_range::{LineRange, LineRanges};
-use style::{OutputComponent, OutputComponents, OutputWrap};
-use syntax_mapping::SyntaxMapping;
-use util::transpose;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PagingMode {
-    Always,
-    QuitIfOneScreen,
-    Never,
-}
-
-#[derive(Clone)]
-pub struct Config<'a> {
-    /// List of files to print
-    pub files: Vec<InputFile<'a>>,
-
-    /// The explicitly configured language, if any
-    pub language: Option<&'a str>,
-
-    /// The character width of the terminal
-    pub term_width: usize,
-
-    /// The width of tab characters.
-    /// Currently, a value of 0 will cause tabs to be passed through without expanding them.
-    pub tab_width: usize,
-
-    /// Whether or not to simply loop through all input (`cat` mode)
-    pub loop_through: bool,
-
-    /// Whether or not the output should be colorized
-    pub colored_output: bool,
-
-    /// Whether or not the output terminal supports true color
-    pub true_color: bool,
-
-    /// Style elements (grid, line numbers, ...)
-    pub output_components: OutputComponents,
-
-    /// Text wrapping mode
-    pub output_wrap: OutputWrap,
-
-    /// Pager or STDOUT
-    pub paging_mode: PagingMode,
-
-    /// Specifies the lines that should be printed
-    pub line_ranges: LineRanges,
-
-    /// The syntax highlighting theme
-    pub theme: String,
-
-    /// File extension/name mappings
-    pub syntax_mapping: SyntaxMapping,
-
-    /// Command to start the pager
-    pub pager: Option<&'a str>,
-}
+use bat::{
+    assets::BAT_THEME_DEFAULT,
+    errors::*,
+    inputfile::InputFile,
+    line_range::{LineRange, LineRanges},
+    style::{OutputComponent, OutputComponents, OutputWrap},
+    syntax_mapping::SyntaxMapping,
+    Config, PagingMode,
+};
 
 fn is_truecolor_terminal() -> bool {
     env::var("COLORTERM")
@@ -111,7 +62,7 @@ impl App {
 
             // Read arguments from bats config file
             let mut args = get_args_from_env_var()
-                .unwrap_or_else(|| get_args_from_config_file())
+                .unwrap_or_else(get_args_from_config_file)
                 .chain_err(|| "Could not parse configuration file")?;
 
             // Put the zero-th CLI argument (program name) first
@@ -134,7 +85,10 @@ impl App {
             Some("always") => PagingMode::Always,
             Some("never") => PagingMode::Never,
             Some("auto") | _ => {
-                if files.contains(&InputFile::StdIn) {
+                if self.matches.occurrences_of("plain") > 1 {
+                    // If we have -pp as an option when in auto mode, the pager should be disabled.
+                    PagingMode::Never
+                } else if files.contains(&InputFile::StdIn) {
                     // If we are reading from stdin, only enable paging if we write to an
                     // interactive terminal and if we do not *read* from an interactive
                     // terminal.
@@ -143,12 +97,10 @@ impl App {
                     } else {
                         PagingMode::Never
                     }
+                } else if self.interactive_output {
+                    PagingMode::QuitIfOneScreen
                 } else {
-                    if self.interactive_output {
-                        PagingMode::QuitIfOneScreen
-                    } else {
-                        PagingMode::Never
-                    }
+                    PagingMode::Never
                 }
             }
         };
@@ -157,24 +109,45 @@ impl App {
 
         if let Some(values) = self.matches.values_of("map-syntax") {
             for from_to in values {
-                let parts: Vec<_> = from_to.split(":").collect();
+                let parts: Vec<_> = from_to.split(':').collect();
 
                 if parts.len() != 2 {
                     return Err("Invalid syntax mapping. The format of the -m/--map-syntax option is 'from:to'.".into());
                 }
 
-                syntax_mapping.insert(parts[0].into(), parts[1].into());
+                syntax_mapping.insert(parts[0], parts[1]);
             }
         }
 
+        let maybe_term_width = self.matches.value_of("terminal-width").and_then(|w| {
+            if w.starts_with('+') || w.starts_with('-') {
+                // Treat argument as a delta to the current terminal width
+                w.parse().ok().map(|delta: i16| {
+                    let old_width: u16 = Term::stdout().size().1;
+                    let new_width: i32 = i32::from(old_width) + i32::from(delta);
+
+                    if new_width <= 0 {
+                        old_width as usize
+                    } else {
+                        new_width as usize
+                    }
+                })
+            } else {
+                w.parse().ok()
+            }
+        });
+
         Ok(Config {
             true_color: is_truecolor_terminal(),
-            language: self.matches.value_of("language"),
-            output_wrap: if !self.interactive_output {
-                // We don't have the tty width when piping to another program.
-                // There's no point in wrapping when this is the case.
-                OutputWrap::None
-            } else {
+            language: self.matches.value_of("language").or_else(|| {
+                if self.matches.is_present("show-all") {
+                    Some("show-nonprintable")
+                } else {
+                    None
+                }
+            }),
+            show_nonprintable: self.matches.is_present("show-all"),
+            output_wrap: if self.interactive_output || maybe_term_width.is_some() {
                 match self.matches.value_of("wrap") {
                     Some("character") => OutputWrap::Character,
                     Some("never") => OutputWrap::None,
@@ -186,6 +159,10 @@ impl App {
                         }
                     }
                 }
+            } else {
+                // We don't have the tty width when piping to another program.
+                // There's no point in wrapping when this is the case.
+                OutputWrap::None
             },
             colored_output: match self.matches.value_of("color") {
                 Some("always") => true,
@@ -193,11 +170,7 @@ impl App {
                 Some("auto") | _ => self.interactive_output,
             },
             paging_mode,
-            term_width: self
-                .matches
-                .value_of("terminal-width")
-                .and_then(|w| w.parse().ok())
-                .unwrap_or(Term::stdout().size().1 as usize),
+            term_width: maybe_term_width.unwrap_or(Term::stdout().size().1 as usize),
             loop_through: !(self.interactive_output
                 || self.matches.value_of("color") == Some("always")
                 || self.matches.value_of("decorations") == Some("always")),
@@ -212,7 +185,7 @@ impl App {
                     if output_components.plain() && paging_mode == PagingMode::Never {
                         0
                     } else {
-                        8
+                        4
                     },
                 ),
             theme: self
@@ -220,18 +193,35 @@ impl App {
                 .value_of("theme")
                 .map(String::from)
                 .or_else(|| env::var("BAT_THEME").ok())
-                .unwrap_or(String::from(BAT_THEME_DEFAULT)),
+                .map(|s| {
+                    if s == "default" {
+                        String::from(BAT_THEME_DEFAULT)
+                    } else {
+                        s
+                    }
+                })
+                .unwrap_or_else(|| String::from(BAT_THEME_DEFAULT)),
             line_ranges: LineRanges::from(
-                transpose(
-                    self.matches
-                        .values_of("line-range")
-                        .map(|vs| vs.map(LineRange::from).collect()),
-                )?
-                .unwrap_or(vec![]),
+                self.matches
+                    .values_of("line-range")
+                    .map(|vs| vs.map(LineRange::from).collect())
+                    .transpose()?
+                    .unwrap_or_else(|| vec![]),
             ),
             output_components,
             syntax_mapping,
             pager: self.matches.value_of("pager"),
+            use_italic_text: match self.matches.value_of("italic-text") {
+                Some("always") => true,
+                _ => false,
+            },
+            highlight_lines: LineRanges::from(
+                self.matches
+                    .values_of("highlight-line")
+                    .map(|ws| ws.map(LineRange::from).collect())
+                    .transpose()?
+                    .unwrap_or_else(|| vec![LineRange { lower: 0, upper: 0 }]),
+            ),
         })
     }
 
@@ -262,25 +252,27 @@ impl App {
             } else if matches.is_present("plain") {
                 [OutputComponent::Plain].iter().cloned().collect()
             } else {
-                let env_style_components: Option<Vec<OutputComponent>> =
-                    transpose(env::var("BAT_STYLE").ok().map(|style_str| {
+                let env_style_components: Option<Vec<OutputComponent>> = env::var("BAT_STYLE")
+                    .ok()
+                    .map(|style_str| {
                         style_str
-                            .split(",")
+                            .split(',')
                             .map(|x| OutputComponent::from_str(&x))
                             .collect::<Result<Vec<OutputComponent>>>()
-                    }))?;
+                    })
+                    .transpose()?;
 
                 matches
                     .value_of("style")
                     .map(|styles| {
                         styles
-                            .split(",")
+                            .split(',')
                             .map(|style| style.parse::<OutputComponent>())
                             .filter_map(|style| style.ok())
                             .collect::<Vec<_>>()
                     })
                     .or(env_style_components)
-                    .unwrap_or(vec![OutputComponent::Full])
+                    .unwrap_or_else(|| vec![OutputComponent::Full])
                     .into_iter()
                     .map(|style| style.components(self.interactive_output))
                     .fold(HashSet::new(), |mut acc, components| {

@@ -1,14 +1,35 @@
 extern crate assert_cmd;
+extern crate escargot;
+#[macro_use]
+extern crate lazy_static;
 
 use assert_cmd::prelude::*;
+use escargot::CargoRun;
 use std::process::Command;
 
-fn bat() -> Command {
-    let mut cmd = Command::main_binary().unwrap();
+lazy_static! {
+    static ref CARGO_RUN: CargoRun = escargot::CargoBuild::new()
+        .bin("bat")
+        .current_release()
+        .run()
+        .unwrap();
+}
+
+fn bat_with_config() -> Command {
+    let mut cmd = CARGO_RUN.command();
     cmd.current_dir("tests/examples");
-    cmd.arg("--no-config");
     cmd.env_remove("PAGER");
     cmd.env_remove("BAT_PAGER");
+    cmd.env_remove("BAT_CONFIG_PATH");
+    cmd.env_remove("BAT_STYLE");
+    cmd.env_remove("BAT_THEME");
+    cmd.env_remove("BAT_TABS");
+    cmd
+}
+
+fn bat() -> Command {
+    let mut cmd = bat_with_config();
+    cmd.arg("--no-config");
     cmd
 }
 
@@ -53,6 +74,79 @@ fn concatenate_stdin() {
         .assert()
         .success()
         .stdout("hello world\nstdin\nhello world\n");
+}
+
+#[test]
+fn concatenate_empty_first() {
+    bat()
+        .arg("empty.txt")
+        .arg("test.txt")
+        .assert()
+        .success()
+        .stdout("hello world\n");
+}
+
+#[test]
+fn concatenate_empty_last() {
+    bat()
+        .arg("test.txt")
+        .arg("empty.txt")
+        .assert()
+        .success()
+        .stdout("hello world\n");
+}
+
+#[test]
+fn concatenate_empty_both() {
+    bat()
+        .arg("empty.txt")
+        .arg("empty.txt")
+        .assert()
+        .success()
+        .stdout("");
+}
+
+#[test]
+fn concatenate_empty_between() {
+    bat()
+        .arg("test.txt")
+        .arg("empty.txt")
+        .arg("test.txt")
+        .assert()
+        .success()
+        .stdout("hello world\nhello world\n");
+}
+
+#[test]
+fn concatenate_empty_first_and_last() {
+    bat()
+        .arg("empty.txt")
+        .arg("test.txt")
+        .arg("empty.txt")
+        .assert()
+        .success()
+        .stdout("hello world\n");
+}
+
+#[test]
+fn concatenate_single_line() {
+    bat()
+        .arg("single-line.txt")
+        .arg("single-line.txt")
+        .assert()
+        .success()
+        .stdout("Single LineSingle Line");
+}
+
+#[test]
+fn concatenate_single_line_empty() {
+    bat()
+        .arg("single-line.txt")
+        .arg("empty.txt")
+        .arg("single-line.txt")
+        .assert()
+        .success()
+        .stdout("Single LineSingle Line");
 }
 
 #[test]
@@ -321,4 +415,92 @@ fn pager_disable() {
         .assert()
         .success()
         .stdout("hello world\n");
+}
+
+#[test]
+fn config_location_test() {
+    bat_with_config()
+        .env("BAT_CONFIG_PATH", "bat.conf")
+        .arg("--config-file")
+        .assert()
+        .success()
+        .stdout("bat.conf\n");
+}
+
+#[test]
+fn config_read_arguments_from_file() {
+    bat_with_config()
+        .env("BAT_CONFIG_PATH", "bat.conf")
+        .arg("test.txt")
+        .assert()
+        .success()
+        .stdout("dummy-pager-from-config\n");
+}
+
+#[test]
+fn utf16() {
+    // The output will be converted to UTF-8 with a leading UTF-8 BOM
+    bat()
+        .arg("--plain")
+        .arg("--decorations=always")
+        .arg("test_UTF-16LE.txt")
+        .assert()
+        .success()
+        .stdout(std::str::from_utf8(b"\xEF\xBB\xBFhello world\n").unwrap());
+}
+
+#[test]
+fn can_print_file_named_cache() {
+    bat_with_config()
+        .arg("cache")
+        .assert()
+        .success()
+        .stdout("test\n")
+        .stderr("");
+}
+
+#[test]
+fn can_print_file_named_cache_with_additional_argument() {
+    bat_with_config()
+        .arg("cache")
+        .arg("test.txt")
+        .assert()
+        .success()
+        .stdout("test\nhello world\n")
+        .stderr("");
+}
+
+#[test]
+fn can_print_file_starting_with_cache() {
+    bat_with_config()
+        .arg("cache.c")
+        .assert()
+        .success()
+        .stdout("test\n")
+        .stderr("");
+}
+
+#[test]
+fn does_not_print_unwanted_file_named_cache() {
+    bat_with_config().arg("cach").assert().failure();
+}
+
+#[test]
+fn snip() {
+    bat()
+        .arg("multiline.txt")
+        .arg("--style=numbers,snip")
+        .arg("--decorations=always")
+        .arg("--line-range=1:2")
+        .arg("--line-range=4:")
+        .arg("--terminal-width=80")
+        .assert()
+        .success()
+        .stdout(
+            "   1 line 1
+   2 line 2
+ ...─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ 8< ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+   4 line 4
+",
+        );
 }

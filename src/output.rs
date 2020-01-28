@@ -6,9 +6,11 @@ use std::process::{Child, Command, Stdio};
 
 use shell_words;
 
-use app::PagingMode;
-use errors::*;
+use crate::errors::*;
+use crate::less::retrieve_less_version;
+use crate::PagingMode;
 
+#[derive(Debug)]
 pub enum OutputType {
     Pager(Child),
     Stdout(io::Stdout),
@@ -26,36 +28,79 @@ impl OutputType {
 
     /// Try to launch the pager. Fall back to stdout in case of errors.
     fn try_pager(quit_if_one_screen: bool, pager_from_config: Option<&str>) -> Result<Self> {
-        let pager_from_env = env::var("BAT_PAGER").or_else(|_| env::var("PAGER"));
-        let pager = pager_from_config
-            .map(|p| p.to_string())
-            .or(pager_from_env.ok())
-            .unwrap_or(String::from("less"));
+        let mut replace_arguments_to_less = false;
 
-        let pagerflags = shell_words::split(&pager)
-            .chain_err(|| "Could not parse (BAT_)PAGER environment variable.")?;
+        let pager_from_env = match (env::var("BAT_PAGER"), env::var("PAGER")) {
+            (Ok(bat_pager), _) => Some(bat_pager),
+            (_, Ok(pager)) => {
+                // less needs to be called with the '-R' option in order to properly interpret the
+                // ANSI color sequences printed by bat. If someone has set PAGER="less -F", we
+                // therefore need to overwrite the arguments and add '-R'.
+                //
+                // We only do this for PAGER (as it is not specific to 'bat'), not for BAT_PAGER
+                // or bats '--pager' command line option.
+                replace_arguments_to_less = true;
+                Some(pager)
+            }
+            _ => None,
+        };
+
+        let pager_from_config = pager_from_config.map(|p| p.to_string());
+
+        if pager_from_config.is_some() {
+            replace_arguments_to_less = false;
+        }
+
+        let pager = pager_from_config
+            .or(pager_from_env)
+            .unwrap_or_else(|| String::from("less"));
+
+        let pagerflags =
+            shell_words::split(&pager).chain_err(|| "Could not parse pager command.")?;
 
         match pagerflags.split_first() {
             Some((pager_name, args)) => {
-                let pager_path = PathBuf::from(pager_name);
+                let mut pager_path = PathBuf::from(pager_name);
+
+                if pager_path.file_stem() == Some(&OsString::from("bat")) {
+                    pager_path = PathBuf::from("less");
+                }
+
                 let is_less = pager_path.file_stem() == Some(&OsString::from("less"));
 
                 let mut process = if is_less {
                     let mut p = Command::new(&pager_path);
-                    if args.is_empty() {
-                        p.args(vec!["--RAW-CONTROL-CHARS", "--no-init"]);
+                    if args.is_empty() || replace_arguments_to_less {
+                        p.arg("--RAW-CONTROL-CHARS");
                         if quit_if_one_screen {
                             p.arg("--quit-if-one-screen");
                         }
+
+                        // Passing '--no-init' fixes a bug with '--quit-if-one-screen' in older
+                        // versions of 'less'. Unfortunately, it also breaks mouse-wheel support.
+                        //
+                        // See: http://www.greenwoodsoftware.com/less/news.530.html
+                        match retrieve_less_version() {
+                            None => {
+                                p.arg("--no-init");
+                            }
+                            Some(version) if version < 530 => {
+                                p.arg("--no-init");
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        p.args(args);
                     }
                     p.env("LESSCHARSET", "UTF-8");
                     p
                 } else {
-                    Command::new(&pager_path)
+                    let mut p = Command::new(&pager_path);
+                    p.args(args);
+                    p
                 };
 
                 Ok(process
-                    .args(args)
                     .stdin(Stdio::piped())
                     .spawn()
                     .map(OutputType::Pager)
@@ -69,7 +114,7 @@ impl OutputType {
         OutputType::Stdout(io::stdout())
     }
 
-    pub fn handle(&mut self) -> Result<&mut Write> {
+    pub fn handle(&mut self) -> Result<&mut dyn Write> {
         Ok(match *self {
             OutputType::Pager(ref mut command) => command
                 .stdin

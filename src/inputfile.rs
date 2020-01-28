@@ -3,14 +3,14 @@ use std::io::{self, BufRead, BufReader};
 
 use content_inspector::{self, ContentType};
 
-use errors::*;
+use crate::errors::*;
 
 const THEME_PREVIEW_FILE: &[u8] = include_bytes!("../assets/theme_preview.rs");
 
 pub struct InputFileReader<'a> {
     inner: Box<dyn BufRead + 'a>,
     pub first_line: Vec<u8>,
-    pub content_type: ContentType,
+    pub content_type: Option<ContentType>,
 }
 
 impl<'a> InputFileReader<'a> {
@@ -18,9 +18,13 @@ impl<'a> InputFileReader<'a> {
         let mut first_line = vec![];
         reader.read_until(b'\n', &mut first_line).ok();
 
-        let content_type = content_inspector::inspect(&first_line[..]);
+        let content_type = if first_line.is_empty() {
+            None
+        } else {
+            Some(content_inspector::inspect(&first_line[..]))
+        };
 
-        if content_type == ContentType::UTF_16LE {
+        if content_type == Some(ContentType::UTF_16LE) {
             reader.read_until(0x00, &mut first_line).ok();
         }
 
@@ -35,7 +39,7 @@ impl<'a> InputFileReader<'a> {
         if self.first_line.is_empty() {
             let res = self.inner.read_until(b'\n', buf).map(|size| size > 0)?;
 
-            if self.content_type == ContentType::UTF_16LE {
+            if self.content_type == Some(ContentType::UTF_16LE) {
                 self.inner.read_until(0x00, buf).ok();
             }
 
@@ -59,7 +63,7 @@ impl<'a> InputFile<'a> {
         match self {
             InputFile::StdIn => Ok(InputFileReader::new(stdin.lock())),
             InputFile::Ordinary(filename) => {
-                let file = File::open(filename)?;
+                let file = File::open(filename).map_err(|e| format!("'{}': {}", filename, e))?;
 
                 if file.metadata()?.is_dir() {
                     return Err(format!("'{}' is a directory.", filename).into());

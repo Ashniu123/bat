@@ -2,42 +2,11 @@
 #![recursion_limit = "1024"]
 
 #[macro_use]
-extern crate error_chain;
-
-#[macro_use]
 extern crate clap;
 
-#[macro_use]
-extern crate lazy_static;
-
-extern crate ansi_term;
-extern crate atty;
-extern crate console;
-extern crate content_inspector;
-extern crate directories;
-extern crate encoding;
-extern crate git2;
-extern crate shell_words;
-extern crate syntect;
-extern crate wild;
-
 mod app;
-mod assets;
 mod clap_app;
 mod config;
-mod controller;
-mod decorations;
-mod diff;
-mod dirs;
-mod inputfile;
-mod line_range;
-mod output;
-mod preprocessor;
-mod printer;
-mod style;
-mod syntax_mapping;
-mod terminal;
-mod util;
 
 use std::collections::HashSet;
 use std::io;
@@ -48,42 +17,19 @@ use std::process;
 use ansi_term::Colour::Green;
 use ansi_term::Style;
 
-use app::{App, Config};
-use assets::{clear_assets, config_dir, HighlightingAssets};
-use config::config_file;
-use controller::Controller;
-use inputfile::InputFile;
-use style::{OutputComponent, OutputComponents};
+use crate::{app::App, config::config_file};
+use bat::controller::Controller;
 
-mod errors {
-    error_chain! {
-        foreign_links {
-            Clap(::clap::Error);
-            Io(::std::io::Error);
-            SyntectError(::syntect::LoadingError);
-            ParseIntError(::std::num::ParseIntError);
-        }
-    }
-
-    pub fn handle_error(error: &Error) {
-        match error {
-            &Error(ErrorKind::Io(ref io_error), _)
-                if io_error.kind() == super::io::ErrorKind::BrokenPipe =>
-            {
-                super::process::exit(0);
-            }
-            _ => {
-                use ansi_term::Colour::Red;
-                eprintln!("{}: {}", Red.paint("[bat error]"), error);
-            }
-        };
-    }
-}
-
-use errors::*;
+use bat::{
+    assets::{cache_dir, clear_assets, config_dir, HighlightingAssets},
+    errors::*,
+    inputfile::InputFile,
+    style::{OutputComponent, OutputComponents},
+    Config,
+};
 
 fn run_cache_subcommand(matches: &clap::ArgMatches) -> Result<()> {
-    if matches.is_present("init") {
+    if matches.is_present("build") {
         let source_dir = matches.value_of("source").map(Path::new);
         let target_dir = matches.value_of("target").map(Path::new);
 
@@ -93,8 +39,6 @@ fn run_cache_subcommand(matches: &clap::ArgMatches) -> Result<()> {
         assets.save(target_dir)?;
     } else if matches.is_present("clear") {
         clear_assets();
-    } else if matches.is_present("config-dir") {
-        writeln!(io::stdout(), "{}", config_dir())?;
     }
 
     Ok(())
@@ -110,48 +54,54 @@ pub fn list_languages(config: &Config) -> Result<()> {
         .collect::<Vec<_>>();
     languages.sort_by_key(|lang| lang.name.to_uppercase());
 
-    let longest = languages
-        .iter()
-        .map(|syntax| syntax.name.len())
-        .max()
-        .unwrap_or(32); // Fallback width if they have no language definitions.
-
-    let comma_separator = ", ";
-    let separator = " ";
-    // Line-wrapping for the possible file extension overflow.
-    let desired_width = config.term_width - longest - separator.len();
-
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
 
-    let style = if config.colored_output {
-        Green.normal()
-    } else {
-        Style::default()
-    };
-
-    for lang in languages {
-        write!(stdout, "{:width$}{}", lang.name, separator, width = longest)?;
-
-        // Number of characters on this line so far, wrap before `desired_width`
-        let mut num_chars = 0;
-
-        let mut extension = lang.file_extensions.iter().peekable();
-        while let Some(word) = extension.next() {
-            // If we can't fit this word in, then create a line break and align it in.
-            let new_chars = word.len() + comma_separator.len();
-            if num_chars + new_chars >= desired_width {
-                num_chars = 0;
-                write!(stdout, "\n{:width$}{}", "", separator, width = longest)?;
-            }
-
-            num_chars += new_chars;
-            write!(stdout, "{}", style.paint(&word[..]))?;
-            if extension.peek().is_some() {
-                write!(stdout, "{}", comma_separator)?;
-            }
+    if config.loop_through {
+        for lang in languages {
+            write!(stdout, "{}:{}\n", lang.name, lang.file_extensions.join(","))?;
         }
-        writeln!(stdout)?;
+    } else {
+        let longest = languages
+            .iter()
+            .map(|syntax| syntax.name.len())
+            .max()
+            .unwrap_or(32); // Fallback width if they have no language definitions.
+
+        let comma_separator = ", ";
+        let separator = " ";
+        // Line-wrapping for the possible file extension overflow.
+        let desired_width = config.term_width - longest - separator.len();
+
+        let style = if config.colored_output {
+            Green.normal()
+        } else {
+            Style::default()
+        };
+
+        for lang in languages {
+            write!(stdout, "{:width$}{}", lang.name, separator, width = longest)?;
+
+            // Number of characters on this line so far, wrap before `desired_width`
+            let mut num_chars = 0;
+
+            let mut extension = lang.file_extensions.iter().peekable();
+            while let Some(word) = extension.next() {
+                // If we can't fit this word in, then create a line break and align it in.
+                let new_chars = word.len() + comma_separator.len();
+                if num_chars + new_chars >= desired_width {
+                    num_chars = 0;
+                    write!(stdout, "\n{:width$}{}", "", separator, width = longest)?;
+                }
+
+                num_chars += new_chars;
+                write!(stdout, "{}", style.paint(&word[..]))?;
+                if extension.peek().is_some() {
+                    write!(stdout, "{}", comma_separator)?;
+                }
+            }
+            writeln!(stdout)?;
+        }
     }
 
     Ok(())
@@ -195,8 +145,8 @@ fn run_controller(config: &Config) -> Result<bool> {
     controller.run()
 }
 
-/// Returns `Err(..)` upon fatal errors. Otherwise, returns `Some(true)` on full success and
-/// `Some(false)` if any intermediate errors occurred (were printed).
+/// Returns `Err(..)` upon fatal errors. Otherwise, returns `Ok(true)` on full success and
+/// `Ok(false)` if any intermediate errors occurred (were printed).
 fn run() -> Result<bool> {
     let app = App::new()?;
 
@@ -229,6 +179,12 @@ fn run() -> Result<bool> {
             } else if app.matches.is_present("config-file") {
                 println!("{}", config_file().to_string_lossy());
 
+                Ok(true)
+            } else if app.matches.is_present("config-dir") {
+                writeln!(io::stdout(), "{}", config_dir())?;
+                Ok(true)
+            } else if app.matches.is_present("cache-dir") {
+                writeln!(io::stdout(), "{}", cache_dir())?;
                 Ok(true)
             } else {
                 run_controller(&config)

@@ -6,7 +6,7 @@
 	url = https://github.com/sublimehq/Packages/
 [submodule "assets/syntaxes/TOML"]
 	path = assets/syntaxes/TOML
-	url = https://github.com/sharkdp/sublime_toml_highlighting
+	url = https://github.com/jasonwilliams/sublime_toml_highlighting
 [submodule "assets/syntaxes/Julia"]
 	path = assets/syntaxes/Julia
 	url = https://github.com/JuliaEditorSupport/Julia-sublime
@@ -97,3 +97,75 @@
 [submodule "assets/themes/sublime-snazzy"]
 	path = assets/themes/sublime-snazzy
 	url = https://github.com/greggb/sublime-snazzy
+[submodule "assets/syntaxes/AsciiDoc"]
+	path = assets/syntaxes/AsciiDoc
+	url = https://github.com/SublimeText/AsciiDoc.git
+[submodule "assets/syntaxes/Assembly (ARM)"]
+	path = assets/syntaxes/Assembly (ARM)
+	url = https://github.com/tvi/Sublime-ARM-Assembly
+[submodule "assets/syntaxes/syslog-syntax"]
+	path = assets/syntaxes/Syslog
+	url = https://github.com/caos21/syslog-syntax.git
+	branch = master
+[submodule "assets/syntaxes/protobuf-syntax-highlighting"]
+	path = assets/syntaxes/Protobuf
+	url = https://github.com/VcamX/protobuf-syntax-highlighting.git
+	branch = master
+[submodule "assets/syntaxes/Terraform"]
+	path = assets/syntaxes/Terraform
+	url = https://github.com/alexlouden/Terraform.tmLanguage.git
+[submodule "assets/syntaxes/Jsonnet"]
+	path = assets/syntaxes/Jsonnet
+	url = https://github.com/gburiola/sublime-jsonnet-syntax.git
+[submodule "assets/syntaxes/varlink"]
+	path = assets/syntaxes/varlink
+	url = https://github.com/varlink/syntax-highlight-varlink.git
+[submodule "assets/syntaxes/sublime-fish"]
+	path = assets/syntaxes/Fish
+	url = https://github.com/Phidica/sublime-fish.git
+[submodule "assets/syntaxes/Org mode"]
+	path = assets/syntaxes/Org mode
+	url = https://github.com/jezcope/Org.tmbundle.git
+[submodule "assets/syntaxes/requirementstxt"]
+	path = assets/syntaxes/requirementstxt
+	url = https://github.com/wuub/requirementstxt
+[submodule "assets/syntaxes/DotENV"]
+	path = assets/syntaxes/DotENV
+	url = https://github.com/zaynali53/DotENV
+[submodule "assets/syntaxes/hosts"]
+	path = assets/syntaxes/hosts
+	url = https://github.com/brandonwamboldt/sublime-hosts
+[submodule "assets/syntaxes/ssh-config"]
+	path = assets/syntaxes/ssh-config
+	url = https://github.com/robballou/sublimetext-sshconfig.git
+[submodule "assets/syntaxes/GraphQL"]
+	path = assets/syntaxes/GraphQL
+	url = https://github.com/dncrews/GraphQL-SublimeText3.git
+[submodule "assets/syntaxes/Verilog"]
+	path = assets/syntaxes/Verilog
+	url = https://github.com/pro711/sublime-verilog
+[submodule "assets/syntaxes/SCSS_Sass"]
+	path = assets/syntaxes/SCSS_Sass
+	url = https://github.com/braver/SublimeSass
+[submodule "assets/syntaxes/Strace"]
+	path = assets/syntaxes/Strace
+	url = https://github.com/djuretic/SublimeStrace
+[submodule "assets/syntaxes/Jinja2"]
+	path = assets/syntaxes/Jinja2
+	url = https://github.com/Martin819/sublime-jinja2
+[submodule "assets/syntaxes/SLS"]
+	path = assets/syntaxes/SLS
+	url = https://github.com/saltstack/sublime-text
+	branch = master
+[submodule "assets/themes/dracula-sublime"]
+	path = assets/themes/dracula-sublime
+	url = https://github.com/dracula/sublime.git
+[submodule "assets/syntaxes/HTML (Twig)"]
+	path = assets/syntaxes/HTML (Twig)
+	url = https://github.com/Anomareh/PHP-Twig.tmbundle.git
+[submodule "assets/themes/Nord-sublime"]
+	path = assets/themes/Nord-sublime
+	url = https://github.com/crabique/Nord-plist.git
+[submodule "assets/themes/solarized-sublime"]
+	path = assets/themes/solarized-sublime
+	url = https://github.com/paulcpederson/solarized-sublime.git

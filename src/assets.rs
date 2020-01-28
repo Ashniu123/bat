@@ -8,14 +8,15 @@ use syntect::dumps::{dump_to_file, from_binary, from_reader};
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet, SyntaxSetBuilder};
 
-use dirs::PROJECT_DIRS;
+use crate::dirs::PROJECT_DIRS;
 
-use errors::*;
-use inputfile::{InputFile, InputFileReader};
-use syntax_mapping::SyntaxMapping;
+use crate::errors::*;
+use crate::inputfile::{InputFile, InputFileReader};
+use crate::syntax_mapping::SyntaxMapping;
 
 pub const BAT_THEME_DEFAULT: &str = "Monokai Extended";
 
+#[derive(Debug)]
 pub struct HighlightingAssets {
     pub syntax_set: SyntaxSet,
     pub theme_set: ThemeSet,
@@ -40,7 +41,7 @@ impl HighlightingAssets {
         let theme_dir = source_dir.join("themes");
 
         let res = theme_set.add_from_folder(&theme_dir);
-        if !res.is_ok() {
+        if res.is_err() {
             println!(
                 "No themes were found in '{}', using the default set",
                 theme_dir.to_string_lossy()
@@ -117,7 +118,7 @@ impl HighlightingAssets {
 
     pub fn save(&self, dir: Option<&Path>) -> Result<()> {
         let target_dir = dir.unwrap_or_else(|| PROJECT_DIRS.cache_dir());
-        let _ = fs::create_dir(target_dir);
+        let _ = fs::create_dir_all(target_dir);
         let theme_set_path = target_dir.join("themes.bin");
         let syntax_set_path = target_dir.join("syntaxes.bin");
 
@@ -191,8 +192,8 @@ impl HighlightingAssets {
                 } else {
                     None
                 };
-                let syntax = ext_syntax.or(line_syntax);
-                syntax
+
+                ext_syntax.or(line_syntax)
             }
             (None, InputFile::StdIn) => String::from_utf8(reader.first_line.clone())
                 .ok()
@@ -214,6 +215,10 @@ fn syntax_set_path() -> PathBuf {
 
 pub fn config_dir() -> Cow<'static, str> {
     PROJECT_DIRS.config_dir().to_string_lossy()
+}
+
+pub fn cache_dir() -> Cow<'static, str> {
+    PROJECT_DIRS.cache_dir().to_string_lossy()
 }
 
 pub fn clear_assets() {

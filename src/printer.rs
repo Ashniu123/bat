@@ -7,6 +7,7 @@ use ansi_term::Style;
 use console::AnsiCodeIterator;
 
 use syntect::easy::HighlightLines;
+use syntect::highlighting::Color;
 use syntect::highlighting::Theme;
 use syntect::parsing::SyntaxSet;
 
@@ -15,24 +16,30 @@ use content_inspector::ContentType;
 use encoding::all::{UTF_16BE, UTF_16LE};
 use encoding::{DecoderTrap, Encoding};
 
-use app::Config;
-use assets::HighlightingAssets;
-use decorations::{Decoration, GridBorderDecoration, LineChangesDecoration, LineNumberDecoration};
-use diff::get_git_diff;
-use diff::LineChanges;
-use errors::*;
-use inputfile::{InputFile, InputFileReader};
-use preprocessor::expand;
-use style::OutputWrap;
-use terminal::{as_terminal_escaped, to_ansi_color};
+use crate::assets::HighlightingAssets;
+use crate::decorations::{
+    Decoration, GridBorderDecoration, LineChangesDecoration, LineNumberDecoration,
+};
+use crate::diff::get_git_diff;
+use crate::diff::LineChanges;
+use crate::errors::*;
+use crate::inputfile::{InputFile, InputFileReader};
+use crate::line_range::RangeCheckResult;
+use crate::preprocessor::{expand_tabs, replace_nonprintable};
+use crate::style::OutputWrap;
+use crate::terminal::{as_terminal_escaped, to_ansi_color};
+use crate::Config;
 
 pub trait Printer {
-    fn print_header(&mut self, handle: &mut Write, file: InputFile) -> Result<()>;
-    fn print_footer(&mut self, handle: &mut Write) -> Result<()>;
+    fn print_header(&mut self, handle: &mut dyn Write, file: InputFile) -> Result<()>;
+    fn print_footer(&mut self, handle: &mut dyn Write) -> Result<()>;
+
+    fn print_snip(&mut self, handle: &mut dyn Write) -> Result<()>;
+
     fn print_line(
         &mut self,
         out_of_range: bool,
-        handle: &mut Write,
+        handle: &mut dyn Write,
         line_number: usize,
         line_buffer: &[u8],
     ) -> Result<()>;
@@ -47,23 +54,27 @@ impl SimplePrinter {
 }
 
 impl Printer for SimplePrinter {
-    fn print_header(&mut self, _handle: &mut Write, _file: InputFile) -> Result<()> {
+    fn print_header(&mut self, _handle: &mut dyn Write, _file: InputFile) -> Result<()> {
         Ok(())
     }
 
-    fn print_footer(&mut self, _handle: &mut Write) -> Result<()> {
+    fn print_footer(&mut self, _handle: &mut dyn Write) -> Result<()> {
+        Ok(())
+    }
+
+    fn print_snip(&mut self, _handle: &mut dyn Write) -> Result<()> {
         Ok(())
     }
 
     fn print_line(
         &mut self,
         out_of_range: bool,
-        handle: &mut Write,
+        handle: &mut dyn Write,
         _line_number: usize,
         line_buffer: &[u8],
     ) -> Result<()> {
         if !out_of_range {
-            handle.write(line_buffer)?;
+            handle.write_all(line_buffer)?;
         }
         Ok(())
     }
@@ -75,10 +86,11 @@ pub struct InteractivePrinter<'a> {
     decorations: Vec<Box<dyn Decoration>>,
     panel_width: usize,
     ansi_prefix_sgr: String,
-    content_type: ContentType,
+    content_type: Option<ContentType>,
     pub line_changes: Option<LineChanges>,
     highlighter: Option<HighlightLines<'a>>,
     syntax_set: &'a SyntaxSet,
+    background_color_highlight: Option<Color>,
 }
 
 impl<'a> InteractivePrinter<'a> {
@@ -89,6 +101,8 @@ impl<'a> InteractivePrinter<'a> {
         reader: &mut InputFileReader,
     ) -> Self {
         let theme = assets.get_theme(&config.theme);
+
+        let background_color_highlight = theme.settings.line_highlight;
 
         let colors = if config.colored_output {
             Colors::colored(theme, config.true_color)
@@ -128,7 +142,10 @@ impl<'a> InteractivePrinter<'a> {
 
         let mut line_changes = None;
 
-        let highlighter = if reader.content_type.is_binary() {
+        let highlighter = if reader
+            .content_type
+            .map_or(false, |c| c.is_binary() && !config.show_nonprintable)
+        {
             None
         } else {
             // Get the Git modifications
@@ -156,10 +173,11 @@ impl<'a> InteractivePrinter<'a> {
             line_changes,
             highlighter,
             syntax_set: &assets.syntax_set,
+            background_color_highlight,
         }
     }
 
-    fn print_horizontal_line(&mut self, handle: &mut Write, grid_char: char) -> Result<()> {
+    fn print_horizontal_line(&mut self, handle: &mut dyn Write, grid_char: char) -> Result<()> {
         if self.panel_width == 0 {
             writeln!(
                 handle,
@@ -175,9 +193,27 @@ impl<'a> InteractivePrinter<'a> {
         Ok(())
     }
 
+    fn create_fake_panel(&self, text: &str) -> String {
+        if self.panel_width == 0 {
+            "".to_string()
+        } else {
+            let text_truncated: String = text.chars().take(self.panel_width - 1).collect();
+            let text_filled: String = format!(
+                "{}{}",
+                text_truncated,
+                " ".repeat(self.panel_width - 1 - text_truncated.len())
+            );
+            if self.config.output_components.grid() {
+                format!("{} │ ", text_filled)
+            } else {
+                format!("{}", text_filled)
+            }
+        }
+    }
+
     fn preprocess(&self, text: &str, cursor: &mut usize) -> String {
         if self.config.tab_width > 0 {
-            expand(text, self.config.tab_width, cursor)
+            expand_tabs(text, self.config.tab_width, cursor)
         } else {
             text.to_string()
         }
@@ -185,8 +221,27 @@ impl<'a> InteractivePrinter<'a> {
 }
 
 impl<'a> Printer for InteractivePrinter<'a> {
-    fn print_header(&mut self, handle: &mut Write, file: InputFile) -> Result<()> {
+    fn print_header(&mut self, handle: &mut dyn Write, file: InputFile) -> Result<()> {
         if !self.config.output_components.header() {
+            if Some(ContentType::BINARY) == self.content_type && !self.config.show_nonprintable {
+                let input = match file {
+                    InputFile::Ordinary(filename) => format!("file '{}'", filename),
+                    _ => "STDIN".into(),
+                };
+
+                writeln!(
+                    handle,
+                    "{}: Binary content from {} will not be printed to the terminal \
+                     (but will be present if the output of 'bat' is piped). You can use 'bat -A' \
+                     to show the binary file contents.",
+                    Yellow.paint("[bat warning]"),
+                    input
+                )?;
+            } else {
+                if self.config.output_components.grid() {
+                    self.print_horizontal_line(handle, '┬')?;
+                }
+            }
             return Ok(());
         }
 
@@ -211,9 +266,10 @@ impl<'a> Printer for InteractivePrinter<'a> {
         };
 
         let mode = match self.content_type {
-            ContentType::BINARY => "   <BINARY>",
-            ContentType::UTF_16LE => "   <UTF-16LE>",
-            ContentType::UTF_16BE => "   <UTF-16BE>",
+            Some(ContentType::BINARY) => "   <BINARY>",
+            Some(ContentType::UTF_16LE) => "   <UTF-16LE>",
+            Some(ContentType::UTF_16BE) => "   <UTF-16BE>",
+            None => "   <EMPTY>",
             _ => "",
         };
 
@@ -226,7 +282,7 @@ impl<'a> Printer for InteractivePrinter<'a> {
         )?;
 
         if self.config.output_components.grid() {
-            if self.content_type.is_text() {
+            if self.content_type.map_or(false, |c| c.is_text()) || self.config.show_nonprintable {
                 self.print_horizontal_line(handle, '┼')?;
             } else {
                 self.print_horizontal_line(handle, '┴')?;
@@ -236,33 +292,64 @@ impl<'a> Printer for InteractivePrinter<'a> {
         Ok(())
     }
 
-    fn print_footer(&mut self, handle: &mut Write) -> Result<()> {
-        if self.config.output_components.grid() && self.content_type.is_text() {
+    fn print_footer(&mut self, handle: &mut dyn Write) -> Result<()> {
+        if self.config.output_components.grid()
+            && (self.content_type.map_or(false, |c| c.is_text()) || self.config.show_nonprintable)
+        {
             self.print_horizontal_line(handle, '┴')
         } else {
             Ok(())
         }
     }
 
+    fn print_snip(&mut self, handle: &mut dyn Write) -> Result<()> {
+        let panel = self.create_fake_panel(" ...");
+        let panel_count = panel.chars().count();
+
+        let title = "8<";
+        let title_count = title.chars().count();
+
+        let snip_left = "─ ".repeat((self.config.term_width - panel_count - (title_count / 2)) / 4);
+        let snip_left_count = snip_left.chars().count(); // Can't use .len() with Unicode.
+
+        let snip_right =
+            " ─".repeat((self.config.term_width - panel_count - snip_left_count - title_count) / 2);
+
+        write!(
+            handle,
+            "{}\n",
+            self.colors
+                .grid
+                .paint(format!("{}{}{}{}", panel, snip_left, title, snip_right))
+        )?;
+
+        Ok(())
+    }
+
     fn print_line(
         &mut self,
         out_of_range: bool,
-        handle: &mut Write,
+        handle: &mut dyn Write,
         line_number: usize,
         line_buffer: &[u8],
     ) -> Result<()> {
-        let line = match self.content_type {
-            ContentType::BINARY => {
-                return Ok(());
+        let line = if self.config.show_nonprintable {
+            replace_nonprintable(&line_buffer, self.config.tab_width)
+        } else {
+            match self.content_type {
+                Some(ContentType::BINARY) | None => {
+                    return Ok(());
+                }
+                Some(ContentType::UTF_16LE) => UTF_16LE
+                    .decode(&line_buffer, DecoderTrap::Replace)
+                    .map_err(|_| "Invalid UTF-16LE")?,
+                Some(ContentType::UTF_16BE) => UTF_16BE
+                    .decode(&line_buffer, DecoderTrap::Replace)
+                    .map_err(|_| "Invalid UTF-16BE")?,
+                _ => String::from_utf8_lossy(&line_buffer).to_string(),
             }
-            ContentType::UTF_16LE => UTF_16LE
-                .decode(&line_buffer, DecoderTrap::Strict)
-                .unwrap_or("Invalid UTF-16LE".into()),
-            ContentType::UTF_16BE => UTF_16BE
-                .decode(&line_buffer, DecoderTrap::Strict)
-                .unwrap_or("Invalid UTF-16BE".into()),
-            _ => String::from_utf8_lossy(&line_buffer).to_string(),
         };
+
         let regions = {
             let highlighter = match self.highlighter {
                 Some(ref mut highlighter) => highlighter,
@@ -282,6 +369,14 @@ impl<'a> Printer for InteractivePrinter<'a> {
         let mut cursor_total: usize = 0;
         let mut panel_wrap: Option<String> = None;
 
+        // Line highlighting
+        let highlight_this_line =
+            self.config.highlight_lines.check(line_number) == RangeCheckResult::InRange;
+
+        let background_color = self
+            .background_color_highlight
+            .filter(|_| highlight_this_line);
+
         // Line decorations.
         if self.panel_width > 0 {
             let decorations = self
@@ -300,43 +395,76 @@ impl<'a> Printer for InteractivePrinter<'a> {
         if self.config.output_wrap == OutputWrap::None {
             let true_color = self.config.true_color;
             let colored_output = self.config.colored_output;
+            let italics = self.config.use_italic_text;
 
             for &(style, region) in regions.iter() {
                 let text = &*self.preprocess(region, &mut cursor_total);
+                let text_trimmed = text.trim_end_matches(|c| c == '\r' || c == '\n');
                 write!(
                     handle,
                     "{}",
-                    as_terminal_escaped(style, &*text, true_color, colored_output,)
+                    as_terminal_escaped(
+                        style,
+                        text_trimmed,
+                        true_color,
+                        colored_output,
+                        italics,
+                        background_color
+                    )
                 )?;
+
+                if text.len() != text_trimmed.len() {
+                    if let Some(background_color) = background_color {
+                        let mut ansi_style = Style::default();
+                        ansi_style.background = Some(to_ansi_color(background_color, true_color));
+                        let width = if cursor_total <= cursor_max {
+                            cursor_max - cursor_total + 1
+                        } else {
+                            0
+                        };
+                        write!(handle, "{}", ansi_style.paint(" ".repeat(width)))?;
+                    }
+                    write!(handle, "{}", &text[text_trimmed.len()..])?;
+                }
             }
 
             if line.bytes().next_back() != Some(b'\n') {
-                write!(handle, "\n")?;
+                writeln!(handle)?;
             }
         } else {
             for &(style, region) in regions.iter() {
-                let mut ansi_iterator = AnsiCodeIterator::new(region);
+                let ansi_iterator = AnsiCodeIterator::new(region);
                 let mut ansi_prefix: String = String::new();
                 for chunk in ansi_iterator {
                     match chunk {
                         // ANSI escape passthrough.
                         (text, true) => {
-                            if text.chars().last().map_or(false, |c| c == 'm') {
+                            let is_ansi_csi = text.starts_with("\x1B[");
+
+                            if is_ansi_csi && text.ends_with('m') {
+                                // It's an ANSI SGR sequence.
+                                // We should be mostly safe to just append these together.
                                 ansi_prefix.push_str(text);
                                 if text == "\x1B[0m" {
                                     self.ansi_prefix_sgr = "\x1B[0m".to_owned();
                                 } else {
                                     self.ansi_prefix_sgr.push_str(text);
                                 }
-                            } else {
+                            } else if is_ansi_csi {
+                                // It's a regular CSI sequence.
+                                // We should be mostly safe to just append these together.
                                 ansi_prefix.push_str(text);
+                            } else {
+                                // It's probably a VT100 code.
+                                // Passing it through is the safest bet.
+                                write!(handle, "{}", text)?;
                             }
                         }
 
                         // Regular text.
                         (text, false) => {
                             let text = self.preprocess(
-                                text.trim_right_matches(|c| c == '\r' || c == '\n'),
+                                text.trim_end_matches(|c| c == '\r' || c == '\n'),
                                 &mut cursor_total,
                             );
 
@@ -362,6 +490,8 @@ impl<'a> Printer for InteractivePrinter<'a> {
                                             ),
                                             self.config.true_color,
                                             self.config.colored_output,
+                                            self.config.use_italic_text,
+                                            background_color
                                         )
                                     )?;
                                     break;
@@ -401,6 +531,8 @@ impl<'a> Printer for InteractivePrinter<'a> {
                                         ),
                                         self.config.true_color,
                                         self.config.colored_output,
+                                        self.config.use_italic_text,
+                                        background_color
                                     ),
                                     panel_wrap.clone().unwrap()
                                 )?;
@@ -413,7 +545,18 @@ impl<'a> Printer for InteractivePrinter<'a> {
                 }
             }
 
-            write!(handle, "\n")?;
+            if let Some(background_color) = background_color {
+                let mut ansi_style = Style::default();
+                ansi_style.background =
+                    Some(to_ansi_color(background_color, self.config.true_color));
+
+                write!(
+                    handle,
+                    "{}",
+                    ansi_style.paint(" ".repeat(cursor_max - cursor))
+                )?;
+            }
+            writeln!(handle)?;
         }
 
         Ok(())
@@ -422,7 +565,7 @@ impl<'a> Printer for InteractivePrinter<'a> {
 
 const DEFAULT_GUTTER_COLOR: u8 = 238;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Colors {
     pub grid: Style,
     pub filename: Style,

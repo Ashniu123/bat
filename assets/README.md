@@ -13,11 +13,14 @@ In order to add new syntaxes to `bat`, follow these steps:
    Sublime Text and convert it to a `.sublime-syntax` file via *Tools* -> *Developer* ->
    *New Syntax from XXX.tmLanguage...*. Save the new file in the `assets/syntaxes` folder.
 
-3. Run the `create.sh` script. It calls `bat cache --init` to parse all available
+3. Run the `create.sh` script. It calls `bat cache --build` to parse all available
    `.sublime-syntax` files and serialize them to a `syntaxes.bin` file (in this folder).
 
 4. Re-compile `bat`. At compilation time, the `syntaxes.bin` file will be stored inside the
    `bat` binary.
+
+5. If you send a pull request with your changes, please do *not* include the changed `syntaxes.bin`
+   file. A new binary cache file will be created once before every new release of `bat`.
 
 ### Troubleshooting
 
@@ -29,4 +32,10 @@ themes (`bat cache --clear`).
 The following files have been manually modified after converting from a `.tmLanguage` file:
 
 * `Dart.sublime-syntax` => removed `#regex.dart` include.
-* `INI.sublime-syntax` => added `.hgrc` and `hgrc` file types.
+* `INI.sublime-syntax` => added `.hgrc`, `hgrc`, and `desktop` file types.
+* `Org mode.sublime-syntax` => removed `task` file type.
+
+### Non-submodule additions
+
+* `Assembly (x86_64)` has been manually added from https://github.com/13xforever/x86-assembly-textmate-bundle due to `git clone` recursion problems
+* `Nim.sublime-syntax` has been added manually from https://github.com/getzola/zola/blob/master/sublime_syntaxes/Nim.sublime-syntax as there was no suitable Git repository for it. The original syntax seems to originate from https://github.com/Varriount/NimLime
